@@ -243,11 +243,16 @@ def subData2sentences(srtData):
 	sentenceData = []
 	sentenceNo = 0
 
+	metric1 = 0 #no of subtitle segments
+	metric2 = 0 #no of sentence ends (no of sentences in movie)
+	metric3 = 0 #no of sentences extracted
+	metric4 = 0 #no of sentences after pass 2 merge
+
 	#FIRST PASS: Split subtitle entries with text belonging to separate sentences
 	for i in range(len(srtData)):
 		entry = srtData[i]
 		#There are two sentences in one sub entry if the first line ends with a sentence ending punctuation(.|!|?|...) and there's a second line.
-
+		metric1 += 1
 		#create a temporary text file for the transcription of the audio tmp_scribefile.txt
 		ft = open(temptextfile, "w")
 		ft.write("%s"%(entry['subtext']))
@@ -277,6 +282,7 @@ def subData2sentences(srtData):
 				noOfWordsInSentence = 0
 				for wordelem in speechseg:
 					if isSentenceEndMark(wordelem.text) and noOfWordsInSentence > 0:   #sentence end
+						metric2 += 1
 						sentenceEntry['sentence'] += wordelem.text[1:]
 						sentenceEntry['duration'] = round(float(wordelem.attrib['stime']) - sentenceEntry['start'] + misdetected_words_error, TIME_ROUNDUP_FOR_AVCONV)
 						sentenceEntry['end'] = round(sentenceEntry['start'] + sentenceEntry['duration'] + cutstart, TIME_ROUNDUP_FOR_AVCONV)
@@ -284,9 +290,9 @@ def subData2sentences(srtData):
 						
 						sentenceConfScore = sentenceConfScoreTotal / noOfWordsInSentence
 						if sentenceEntryOK(sentenceEntry, sentenceConfScore):
-							
+							metric3 += 1
 							sentenceEntry['id'] = sentenceNo
-							#print "%d - %s"%(sentenceNo, sentenceEntry['sentence'])
+							print "%d - %s"%(sentenceNo, sentenceEntry['sentence'])
 							sentenceData.append(sentenceEntry)
 							sentenceNo += 1
 
@@ -299,8 +305,9 @@ def subData2sentences(srtData):
 						if not sentenceEntry['sentence']:
 							sentenceEntry['start'] = round(float(wordelem.attrib['stime']), TIME_ROUNDUP_FOR_AVCONV)
 						sentenceEntry['sentence'] += wordelem.text[1:]
-						noOfWordsInSentence += 1
+						
 						if not isPunctuationMark(wordelem.text[1:]):
+							noOfWordsInSentence += 1
 							sentenceConfScoreTotal += float(wordelem.attrib['conf'])
 						#sometimes only the last words in a sentence are not recognized well by the scriber and their durations are detected as 0. 
 						#To compansate this for each word with duration 0 we add 0.25 (average word length) for each misdetected word to the duration of the sentence at the end.
@@ -315,10 +322,13 @@ def subData2sentences(srtData):
 				sentenceEntry['end'] = round(float(wordelem.attrib['stime']) + cutstart, TIME_ROUNDUP_FOR_AVCONV)
 				sentenceEntry['start'] += round(cutstart, TIME_ROUNDUP_FOR_AVCONV) #add the starttime of the subtitle 
 				
-				if sentenceEntryOK(sentenceEntry, sentenceConfScoreTotal / noOfWordsInSentence):
-					sentenceNo += 1
-					sentenceEntry['id'] = sentenceNo
-					sentenceData.append(sentenceEntry)
+				if noOfWordsInSentence > 0:
+					sentenceConfScore = sentenceConfScoreTotal / noOfWordsInSentence
+					if sentenceEntryOK(sentenceEntry, sentenceConfScore):
+						sentenceNo += 1
+						sentenceEntry['id'] = sentenceNo
+						sentenceData.append(sentenceEntry)
+						metric3 += 1
 
 		#CLEANUP delete temp wav file, temp text file, temp scribe file
 		cleanup(tempwavfile, entry['id'])
@@ -362,7 +372,13 @@ def subData2sentences(srtData):
 			newSEntry['subIds'] = subIds
 
 			sentenceDataMerged.append(newSEntry)
+			metric4 += 1
 		i += 1
+
+	print "metric1: %i"%metric1
+	print "metric2: %i"%metric2
+	print "metric3: %i"%metric3
+	print "metric4: %i"%metric4
 
 	return sentenceDataMerged
 
