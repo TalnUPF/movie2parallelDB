@@ -3,39 +3,27 @@ Automated parallel speech database with prosodic features extractor from dubbed 
 
 * Inputs: 
 
-Movie audio in language1 - `<audio_1>`
-
-Movie audio in language2 - `<audio_2>`
-
-Subtitles (.srt) in language1 - `<srt_1>`
-
-Subtitles (.srt) in language2 - `<srt_2>`
-
+- Movie audio in language1 - `<audio_1>`
+- Movie audio in language2 - `<audio_2>`
+- Subtitles (.srt) in language1 - `<srt_1>`
+- Subtitles (.srt) in language2 - `<srt_2>`
 
 * Outputs:
-
-Language 1 cropped sentences directory - `<lang1-sentence-segments-output-folder>`
-
-Language 2 cropped sentences directory - `<lang2-sentence-segments-output-folder>`
-
-Parallel text data - `<parallel-data-textdump>`
-
-Parallel speech+prosodic parameters directory - `<parallel-db-folder>`
-
+- Language 1 cropped sentences directory - `<lang1-sentence-segments-output-folder>`
+- Language 2 cropped sentences directory - `<lang2-sentence-segments-output-folder>`
+- Parallel text data - `<parallel-data-textdump>`
+- Parallel speech+prosodic parameters directory - `<parallel-db-folder>`
 
 * Required installations on Linux system:
-
-Python 2.7, avconv, meteor
+- Python 2.7, avconv, meteor
 
 * Required Python libraries:
-
-yandex_translate, numpy, nltk
+- yandex_translate, numpy, nltk
 
 * Required library accesses:
+- Scriber - credentials for scriber (https://scribe.vocapia.com/) should be set on `src/credentials.py` for this step to run. If you don't have access credentials for this service, the word segmentation output should look like `example/example-scriber-wordsegmentation.xml`
 
-Scriber - credentials for scriber (https://scribe.vocapia.com/) should be set on `src/credentials.py` for this step to run. If you don't have access credentials for this service, the word segmentation output should look like `example/example-scriber-wordsegmentation.xml`
-
-## DATABASE EXTRACTION
+## Database Extraction
 
 In order to extract mp3 audio from multichannel video file, you can use ffmpeg:
 
