@@ -60,7 +60,7 @@ Sample movie data in example directory is from the film "The Man Who Knew Too Mu
 
 ## Citing
 
-This work is published as:
+This work is published in BUCC workshop under ACL 2017: [Paper link](https://repositori.upf.edu/handle/10230/32716)
 
 	@inproceedings{movie2parallelDB,
 		author = {Alp Oktem and Mireia Farrus and Leo Wanner},
