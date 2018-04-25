@@ -24,6 +24,7 @@ SENTENCE_END_MARKS = ['.', '?', '!', ':', '"']
 PUNCTUATION_MARKS = [',', ';', '/', '"']
 WAV_BITRATE = 16000
 DEFAULT_SPEAKER_ID = "actor"
+DEFAULT_FILE_ID = "movie"
 
 MFA_ALIGN_BINARY = "/Users/alp/extSW/montreal-forced-aligner/bin/mfa_align"
 MFA_LEXICON_ENG = "/Users/alp/extSW/montreal-forced-aligner/pretrained_models/en.dict"
@@ -234,29 +235,125 @@ def to_proscript(srt_data):
 				#print("----====----")
 	return proscript
 
-def main(options):
+def split_multispeaker_segments(proscript, default_speaker_id = DEFAULT_SPEAKER_ID):
+    proscript.word_list = []
+    new_segment_list = []
+    for index, segment in enumerate(proscript.segment_list):
+    	if len(segment.word_list) and segment.transcript:
+        	transcript_parts = [tr.strip() for tr in segment.transcript.split(' - ')]
+        	split_at = [0] + segment.needs_split_at + [len(segment.word_list)]
+	        for split_index in range(len(split_at) - 1):
+	            new_segment = Segment()
+	            new_segment.id = len(new_segment_list) + 1
+	            new_segment.speaker_id = default_speaker_id
+	            try:
+	            	new_segment.start_time = segment.word_list[split_at[split_index]].start_time
+	            except:
+	            	print(index)
+	            	print(segment.transcript)
+	            	print(split_at)
+	            new_segment.end_time = segment.word_list[split_at[split_index + 1] - 1].end_time
+	            new_segment.transcript = transcript_parts[split_index]
+	            new_segment.proscript_ref = proscript
+	            for word in segment.word_list[split_at[split_index]:split_at[split_index + 1]]:
+	                new_segment.add_word(word)
 
+	            new_segment.word_aligned = True
+	            new_segment_list.append(new_segment)
+    proscript.segment_list = new_segment_list   
+
+def merge_discontinued_segments(proscript):
+	return 1
+
+def get_speaker_info_from_transcript(proscript, scriptfile):
+	return 1
+
+'''
+Fills process list from a file with tab separated info: file id, audio file, srt file, script file, language
+'''
+def get_process_list_from_file(file_list_file, output_dir):
 	process_list = []
 	#Fill process list either from process list or from given audio, subtitle pair
-	if options.list_of_files:
-		with open(options.list_of_files) as f:
-			for line in f:
+	if not checkArgument(file_list_file, isFile=True):
+		print("File list file doesn't exist")
+
+	with open(file_list_file) as f:
+		for line in f:
+			if not line.startswith('#'):
 				file_id = line.split('\t')[0]
 				file_in_audio = line.split('\t')[1].strip()
 				file_in_srt = line.split('\t')[2].strip()
-				file_lang = line.split('\t')[3].strip()
-				file_output_dir = os.path.join(options.outdir, file_id)
+				file_in_script = line.split('\t')[3].strip()
+				file_lang = line.split('\t')[4].strip()
+				file_output_dir = os.path.join(output_dir, file_id)
 				if checkArgument(file_in_audio, isFile=True) and checkArgument(file_in_srt, isFile=True):
-					output_dir = os.path.join(options.outdir, file_id, file_lang)
+					output_dir = os.path.join(output_dir, file_id, file_lang)
 					checkArgument(output_dir, isDir=True, createDir=True)
-					process_list.append({'file_id': file_id, 'file_in_audio':file_in_audio, 'file_in_srt':file_in_srt, 'output_dir':output_dir, 'lang':file_lang})	
-	else:
-		file_id = "movie"
-		checkArgument(options.audiofile, isFile=True)
-		checkArgument(options.subfile, isFile=True)
-		checkArgument(options.outdir, isDir=True, createDir=True)
-		process_list.append({'file_id': file_id, 'file_in_audio':options.audiofile, 'file_in_srt':options.subfile, 'output_dir':options.outdir, 'lang':options.movielang})	
+					process_list.append({'file_id': file_id, 'file_in_audio':file_in_audio, 'file_in_srt':file_in_srt, 'file_in_script':file_in_script, 'output_dir':output_dir, 'lang':file_lang})	
+				else:
+					print("audio file %s or srt file %s doesn't exist"%(file_in_audio, file_in_srt))
+	return process_list
 
+'''
+Fills process list from given arguments
+'''
+def get_process_list(file_id, audio_file, sub_file, script_file, output_dir, lang):
+	if not checkArgument(audio_file, isFile=True):
+		print("audio file doesn't exist")
+	if not checkArgument(sub_file, isFile=True):
+		print("subtitle file doesn't exist")
+	checkArgument(output_dir, isDir=True, createDir=True)
+	process_list = {'file_id': file_id, 'file_in_audio':audio_file, 'file_in_srt':sub_file, 'file_in_script':script_file, 'output_dir':output_dir, 'lang':lang}
+	return [process_list]
+
+'''
+Uses all info to create proscript. Stores in files. Extracts each segment to separate wav files
+'''
+def process_file(movieid, audiofile, subfile, scriptfile, outdir, movielang, input_audio_format, transcribe_dub = False):
+	print("Audio: %s\nSubtitles: %s\nLanguage: %s\nTranscription: %s"%(audiofile, subfile, movielang, transcribe_dub))
+	print("Reading subtitles...", end="")
+	srt_encoding = sniff_file_encoding(subfile)
+	print(" (encoding: %s) ..."%srt_encoding, end="")
+	srtData = pysrt.open(subfile, encoding=srt_encoding)
+	print("done")
+
+	#Audio file needs to be stored as wav in the output folder temporarily
+	audio = AudioSegment.from_file(audiofile, format=input_audio_format)
+	tmp_audiopath = os.path.join(outdir, movieid + '_' + movielang + '.wav')
+	cutAudioWithPydub(audio, 0, subriptime_to_seconds(srtData[-1].end), tmp_audiopath)
+
+	movie_proscript = to_proscript(srtData)
+	movie_proscript.id = movieid
+	movie_proscript.audio = tmp_audiopath
+	movie_proscript.duration = audio.duration_seconds
+	movie_proscript.speaker_ids.append(DEFAULT_SPEAKER_ID)
+	
+	utils.proscript_segments_to_textgrid(movie_proscript, outdir, file_prefix="%s_%s"%(movieid, movielang), speaker_segmented=False)
+	if movielang == 'eng':
+		utils.mfa_word_align(outdir,  transcript_type="TextGrid", mfa_align_binary=MFA_ALIGN_BINARY, lexicon=MFA_LEXICON_ENG, language_model=MFA_LM_ENG)
+	elif movielang == 'spa':
+		utils.mfa_word_align(outdir,  transcript_type="TextGrid", mfa_align_binary=MFA_ALIGN_BINARY, lexicon=MFA_LEXICON_SPA, language_model=MFA_LM_SPA)
+	utils.get_word_alignment_from_textgrid(movie_proscript)
+	split_multispeaker_segments(movie_proscript, default_speaker_id = DEFAULT_SPEAKER_ID)
+	merge_discontinued_segments(movie_proscript)
+	utils.assign_word_ids(movie_proscript)
+	get_speaker_info_from_transcript(movie_proscript, scriptfile)
+
+	#STORE DATA TO FILES
+	extract_audio_segments(movie_proscript, tmp_audiopath, outdir, file_prefix='%s_%s'%(movieid, movielang), output_audio_format='wav')
+
+	segments_proscript_file = os.path.join(outdir, "%s_%s.segments-proscript.csv"%(movieid, movielang))
+	movie_proscript.segments_to_csv(segments_proscript_file, ['id', 'start_time', 'end_time', 'transcript'], delimiter='|')
+
+	words_proscript_file = os.path.join(outdir, "%s_%s.words-proscript.csv"%(movieid, movielang))
+	movie_proscript.to_csv(words_proscript_file)
+
+	if DELETE_TMP_WAV:
+		os.remove(tmp_audiopath)
+
+	return movie_proscript
+
+def process_files(process_list, input_audio_format, transcribe_dub = False):
 	#Process files
 	for process in process_list:
 		movieid = process['file_id']
@@ -264,52 +361,29 @@ def main(options):
 		subfile = process['file_in_srt']
 		outdir = process['output_dir']
 		movielang = process['lang']
+		scriptfile = process['file_in_script']
 
-		print("Audio: %s\nSubtitles: %s\nLanguage: %s\nTranscription: %s"%(audiofile, subfile, movielang, options.transcribe_dub))
-		print("Reading subtitles...", end="")
-		srt_encoding = sniff_file_encoding(subfile)
-		print(" (encoding: %s) ..."%srt_encoding, end="")
-		srtData = pysrt.open(subfile, encoding=srt_encoding)
-		print("done")
+		yield process_file(movieid, audiofile, subfile, scriptfile, outdir, movielang, input_audio_format, transcribe_dub)
 
-		#Audio file needs to be stored as wav in the output folder temporarily
-		audio = AudioSegment.from_file(audiofile, format=options.audioformat)
-		tmp_audiopath = os.path.join(outdir, movieid + '_' + movielang + '.wav')
-		cutAudioWithPydub(audio, 0, subriptime_to_seconds(srtData[-1].end), tmp_audiopath)
+def main(options):
+	process_list = []
+	#Fill process list either from process list or from given audio, subtitle pair
+	if options.list_of_files:
+		process_list = get_process_list_from_file(options.list_of_files, options.outdir)
+	else:
+		process_list = get_process_list(DEFAULT_FILE_ID, options.audiofile, options.subfile, options.scriptfile, options.outdir, options.movielang, )
 
-		movie_proscript = to_proscript(srtData)
-		movie_proscript.id = movieid
-		movie_proscript.audio = tmp_audiopath
-		movie_proscript.duration = audio.duration_seconds
-		movie_proscript.speaker_ids.append(DEFAULT_SPEAKER_ID)
-		
-		utils.proscript_segments_to_textgrid(movie_proscript, outdir, file_prefix="%s_%s"%(movieid, movielang), speaker_segmented=False)
-		if movielang == 'eng':
-			utils.mfa_word_align(outdir,  transcript_type="TextGrid", mfa_align_binary=MFA_ALIGN_BINARY, lexicon=MFA_LEXICON_ENG, language_model=MFA_LM_ENG)
-		elif movielang == 'spa':
-			utils.mfa_word_align(outdir,  transcript_type="TextGrid", mfa_align_binary=MFA_ALIGN_BINARY, lexicon=MFA_LEXICON_SPA, language_model=MFA_LM_SPA)
-		utils.get_word_alignment_from_textgrid(movie_proscript)
-		utils.split_multispeaker_segments(movie_proscript, default_speaker_id = DEFAULT_SPEAKER_ID)
-		utils.assign_word_ids(movie_proscript)
-
-		extract_audio_segments(movie_proscript, tmp_audiopath, outdir, file_prefix='%s_%s'%(movieid, movielang), output_audio_format='wav')
-
-		#STORE DATA TO FILES
-		segments_proscript_file = os.path.join(outdir, "%s_%s.segments-proscript.csv"%(movieid, movielang))
-		movie_proscript.segments_to_csv(segments_proscript_file, ['id', 'start_time', 'end_time', 'transcript'], delimiter='|')
-
-		words_proscript_file = os.path.join(outdir, "%s_%s.words-proscript.csv"%(movieid, movielang))
-		movie_proscript.to_csv(words_proscript_file)
-
-		if DELETE_TMP_WAV:
-			os.remove(tmp_audiopath)
-
+	#Process all files in process list
+	for movie_proscript in process_files(process_list, options.audioformat, options.transcribe_dub):
+		print("Processed %s"%movie_proscript.id)
+	
 if __name__ == "__main__":
     usage = "usage: %prog [-s infile] [option]"
     parser = OptionParser(usage=usage)
     parser.add_option("-i", "--filelist", dest="list_of_files", default=None, help="list of files to process. Each line with id, wav, xml, lang (tab separated)", type="string")	#glissando files
     parser.add_option("-a", "--audiofile", dest="audiofile", default=None, help="movie audio file to be segmented", type="string")
     parser.add_option("-s", "--sub", dest="subfile", default=None, help="subtitle file (srt)", type="string")
+    parser.add_option("-c", "--script", dest="scriptfile", default='NA', help="movie script file with speaker information", type="string")
     parser.add_option("-o", "--output-dir", dest="outdir", default=None, help="Directory to output segments and sentences", type="string")
     parser.add_option("-l", "--lang", dest="movielang", default="", help="Language of the movie audio (Three letter ISO 639-2/T code)", type="string")
     parser.add_option("-t", "--transcribe", dest="transcribe_dub", action="store_true", default=False, help="send dubbed audio segments to wit.ai")
