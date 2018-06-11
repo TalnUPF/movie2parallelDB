@@ -5,6 +5,7 @@ import sys
 import re
 import csv
 import copy
+import shutil
 #import speech_recognition as sr
 from datetime import datetime, date, time, timedelta
 import pysrt
@@ -22,7 +23,7 @@ SENTENCE_END_BUFFER = 0
 END_WORD_MISDETECTION_COMPANSATION = 0.30
 MAX_SENTENCE_DURATION = 30.0
 MERGE_SEGMENT_MAX_SECONDS = 5.0
-SCRIPT_SEARCH_RANGE = 4
+SCRIPT_SEARCH_RANGE = 10
 SCRIPT_MATCH_THRESHOLD = 0.7
 SENTENCE_END_MARKS = ['.', '?', '!', ':', '"']
 PUNCTUATION_MARKS = [',', ';', '/', '"']
@@ -42,12 +43,10 @@ MFA_LM_ENG = "/Users/alp/extSW/montreal-forced-aligner/pretrained_models/english
 MFA_LEXICON_SPA = "/Users/alp/extSW/montreal-forced-aligner/pretrained_models/spanish.dict"
 MFA_LM_SPA = "/Users/alp/extSW/montreal-forced-aligner/pretrained_models/spanish.zip"
 
-
-
 '''
 Helper function for checking arguments.
 '''
-def checkArgument(argname, isFile=False, isDir=False, createDir=False):
+def checkArgument(argname, isFile=False, isDir=False, createDir=False, resetDir=False):
 	if not argname:
 		return False
 	else:
@@ -60,6 +59,10 @@ def checkArgument(argname, isFile=False, isDir=False, createDir=False):
 					os.makedirs(argname)
 				else:
 					return False
+			elif resetDir:
+				shutil.rmtree(argname)
+				print("Creating directory %s"%(argname))
+				os.makedirs(argname)
 	return True
 
 '''
@@ -119,7 +122,7 @@ Cuts each segment and outputs as wav+transcript(+proscript) to given directory
 '''
 def extract_segments_to_disk(proscript, audiofile, output_dir, extract_audio, extract_proscript, file_prefix="", output_audio_format='wav', segments_subdir='segments'):
 	segments_output_dir = os.path.join(output_dir, segments_subdir)
-	checkArgument(segments_output_dir, createDir = True)
+	checkArgument(segments_output_dir, createDir = True, resetDir=True)
 	if checkArgument(audiofile, isFile=True):
 		audio_segment = AudioSegment.from_file(audiofile, format='wav')
 	elif extract_audio:
@@ -162,7 +165,7 @@ def extract_proscript_data_to_disk(proscript, output_dir, language, cut_audio_po
 								 segments_subdir=segments_subdir)
 
 
-	print("Data extracted to%s."%output_dir)
+	print("Data extracted to %s."%output_dir)
 '''
 Converts SubRipTime object to seconds
 '''
@@ -174,12 +177,20 @@ def subriptime_to_seconds(srTime):
 All text normalization here
 '''
 def normalize_transcript(transcript):
-	transcript = re.sub('’', "'", transcript)
-	transcript = re.sub('"', ' ', transcript)
-	transcript = re.sub('\n', ' ', transcript)
-	transcript = re.sub('^-', '', transcript)
-	transcript = re.sub(' -', ' - ', transcript)
-	return transcript
+    transcript = re.sub('[#*^+=_@~\|><\}\{]', '', transcript)
+    transcript = re.sub('’', "'", transcript)
+    transcript = re.sub('"', ' ', transcript)
+    transcript = re.sub('\n', ' ', transcript)   #new line to space
+    transcript = re.sub(r"(\(|\[)(.|\s)+(\]|\))", "", transcript)	#remove entries with non-speech information such as [LAUGHTER] [MOAN] (HORN HONKING)
+    transcript = re.sub(r"-*[A-Z|0-9][A-Z| |0-9]+:", "-", transcript)  #convert speaker tag to dash
+    transcript = re.sub('^-', '', transcript)		#remove dash at the beginning
+    transcript = re.sub(' -', ' - ', transcript)	#Maintain speech dashes as separate tokens
+    transcript = re.sub(r'(\w)-(\w)', r'\1 \2', transcript)
+    transcript = re.sub(' +',' ', transcript)  #remove repeating whitespaces
+    transcript = transcript.strip()
+    transcript = re.sub(',\.\.\.$', ',', transcript)   #convert trailing three dots with comma to only comma
+    transcript = re.sub('^\.\.\.', '', transcript)   #remove leading three dots
+    return transcript
 
 '''
 Returns true if the transcript ends a sentence. 
@@ -193,13 +204,14 @@ def check_sentence_end(transcript, three_dots_as_end=False):
 	else:
 		return False
 
+#TODO: return if there's a comma left. Then the segment is continueing in the next entry. 
 def check_discontinued_end(transcript):
 	if transcript[-1] == '.':
 		word_reversed = transcript[::-1]
 		if re.search(r"^\W",word_reversed):
 			punc = word_reversed[:re.search(r"\w", word_reversed).start()][::-1]
-		if punc == '...':
-			return True
+			if punc == '...':
+				return True
 	return False
 
 '''
@@ -209,80 +221,105 @@ def to_proscript(srt_data):
 	proscript = Proscript()
 
 	segment_count = 0
-	first_utterance = True
+	curr_seg_defined = False
 
 	for index, srt_entry in enumerate(srt_data):
 		start_time = subriptime_to_seconds(srt_entry.start)
 		end_time = subriptime_to_seconds(srt_entry.end)
 
 		transcript = srt_entry.text_without_tags.strip()
+		normalized_transcript = normalize_transcript(transcript)
+		#print("srt:%s"%transcript)
+		#print("srt.normal:%s"%normalized_transcript)
 
-		if not transcript.isspace():
-			if first_utterance:
+		if not curr_seg_defined:
+			#print("curr seg not defined")
+			if normalized_transcript and not normalized_transcript.isspace():
 				curr_seg = Segment()
 				curr_seg.speaker_id = DEFAULT_SPEAKER_ID
 				curr_seg.start_time = start_time
 				curr_seg.end_time = end_time
-				curr_seg.transcript += transcript
-				first_utterance = False
-			elif check_sentence_end(curr_seg.transcript, three_dots_as_end=True) or start_time - curr_seg.end_time > MERGE_SEGMENT_MAX_SECONDS:
-				if curr_seg.transcript and not curr_seg.transcript.isspace():
-					segment_count += 1
-					curr_seg.id = segment_count
-					curr_seg.transcript = normalize_transcript(curr_seg.transcript)
-					proscript.add_segment(curr_seg)
-					#curr_seg.to_string()
-					#print("----====----")
-				curr_seg = Segment()
-				curr_seg.speaker_id = DEFAULT_SPEAKER_ID
-				curr_seg.start_time = start_time
-				curr_seg.end_time = end_time
-				curr_seg.transcript += transcript
-				#print("curr_seg:\n%s"%curr_seg.transcript)
+				curr_seg.transcript += normalized_transcript
+				curr_seg_defined = True
+				#print("new curr_seg: %s"%curr_seg.transcript)
 			else:
-				curr_seg.end_time = subriptime_to_seconds(srt_entry.end)
-				curr_seg.transcript += ' ' + transcript
-				#print("curr_seg:\n%s"%curr_seg.transcript)
-
-		if index == len(srt_data) - 1:
-			if curr_seg.transcript and not curr_seg.transcript.isspace():
+				pass
+				#print("no info in srt")
+		else:
+			#print("curr seg defined")
+			if check_sentence_end(curr_seg.transcript, three_dots_as_end=True) or start_time - curr_seg.end_time > MERGE_SEGMENT_MAX_SECONDS:
+				#print("----==add.seg==----")
 				segment_count += 1
 				curr_seg.id = segment_count
-				curr_seg.transcript = normalize_transcript(transcript)
 				proscript.add_segment(curr_seg)
 				#curr_seg.to_string()
-				#print("----====----")
+				curr_seg_defined = False
+				#print("----==added==----")
+				if normalized_transcript and not normalized_transcript.isspace():
+					curr_seg = Segment()
+					curr_seg.speaker_id = DEFAULT_SPEAKER_ID
+					curr_seg.start_time = start_time
+					curr_seg.end_time = end_time
+					curr_seg.transcript += normalized_transcript
+					curr_seg_defined = True
+					#print("new curr_seg: %s"%curr_seg.transcript)
+				else:
+					curr_seg_defined = False
+					#print("no info in srt")
+			elif normalized_transcript and not normalized_transcript.isspace():
+				curr_seg.end_time = subriptime_to_seconds(srt_entry.end)
+				curr_seg.transcript += ' ' + normalized_transcript
+				#print("update curr_seg: %s"%curr_seg.transcript)
+			else:
+				pass
+				#print("Here. seg wasted probably")
+		#print("-----")
+
+		if index == len(srt_data) - 1:
+			if curr_seg_defined and curr_seg.transcript and not curr_seg.transcript.isspace():
+				segment_count += 1
+				curr_seg.id = segment_count
+				curr_seg.transcript = normalized_transcript
+				#print("----==last.add.seg==----")
+				proscript.add_segment(curr_seg)
+				#curr_seg.to_string()
+				#print("----==last.added==----")
+	#print("Exiting to_proscript")
+	#print("No of segs: %i"%len(proscript.segment_list))
 	return proscript
 
 '''
 Splits segments that have more than one speaker turn.
 '''
 def split_multispeaker_segments(proscript, default_speaker_id = DEFAULT_SPEAKER_ID):
-    proscript.word_list = []
-    new_segment_list = []
-    for index, segment in enumerate(proscript.segment_list):
-    	if len(segment.word_list) and segment.transcript:
-        	transcript_parts = [tr.strip() for tr in segment.transcript.split(' - ')]
-        	split_at = [0] + segment.needs_split_at + [len(segment.word_list)]
-	        for split_index in range(len(split_at) - 1):
-	            new_segment = Segment()
-	            new_segment.id = len(new_segment_list) + 1
-	            new_segment.speaker_id = default_speaker_id
-	            try:
-	            	new_segment.start_time = segment.word_list[split_at[split_index]].start_time
-	            except:
-	            	print(index)
-	            	print(segment.transcript)
-	            	print(split_at)
-	            new_segment.end_time = segment.word_list[split_at[split_index + 1] - 1].end_time
-	            new_segment.transcript = transcript_parts[split_index]
-	            new_segment.proscript_ref = proscript
-	            for word in segment.word_list[split_at[split_index]:split_at[split_index + 1]]:
-	                new_segment.add_word(word)
+	proscript.word_list = []
+	new_segment_list = []
+	for index, segment in enumerate(proscript.segment_list):
+		if len(segment.word_list) and segment.transcript:
+			transcript_parts = [tr.strip() for tr in segment.transcript.split(' - ')]
+			split_at = [0] + segment.needs_split_at + [len(segment.word_list)]
+			for split_index in range(len(split_at) - 1):
+				try:
+					new_segment = Segment()
+					new_segment.id = len(new_segment_list) + 1
+					new_segment.speaker_id = default_speaker_id
+					new_segment.start_time = segment.word_list[split_at[split_index]].start_time
+					new_segment.end_time = segment.word_list[split_at[split_index + 1] - 1].end_time
+					new_segment.transcript = transcript_parts[split_index]
+					new_segment.proscript_ref = proscript
+					for word in segment.word_list[split_at[split_index]:split_at[split_index + 1]]:
+						new_segment.add_word(word)
 
-	            new_segment.word_aligned = True
-	            new_segment_list.append(new_segment)
-    proscript.segment_list = new_segment_list   
+					new_segment.word_aligned = True
+					new_segment_list.append(new_segment)
+				except:
+					print("Multispeaker split problem at")
+					print(index)
+					print(segment.transcript)
+					print("Split at:")
+					print(split_at)
+
+	proscript.segment_list = new_segment_list   
 
 '''
 Merges segments that end with three dots. (If they are of the same speaker)
@@ -342,7 +379,7 @@ def read_movie_transcript(scriptfile):
 	script_speaker_data = []
 	with open(scriptfile, encoding="utf-8") as file:
 	    for line in file:
-	        if re.match(r"[A-Z][A-Z|\s|\.|\(|\)|0-9]*:.+", line):
+	        if re.match(r"^[a-z|A-Z|\s|\.|\(|\)|0-9]*:.+", line):
 	            speaker = line[:line.find(":")]
 	            script = line[line.find(":") + 1:]
 	            #print(speaker)
@@ -456,6 +493,7 @@ def process_movie(movieid, audiofile, subfile, scriptfile, outdir, movielang, in
 	#Audio file needs to be stored as wav in the output folder temporarily
 	print("Copying audio as wav...", end="")
 	audio = AudioSegment.from_file(audiofile, format=input_audio_format)
+	audio = audio.set_channels(1)
 	tmp_audiopath = os.path.join(outdir, movieid + '_' + movielang + '.wav')
 	cutAudioWithPydub(audio, 0, subriptime_to_seconds(srtData[-1].end), tmp_audiopath)
 	print("done")
@@ -467,7 +505,7 @@ def process_movie(movieid, audiofile, subfile, scriptfile, outdir, movielang, in
 	movie_proscript.duration = audio.duration_seconds
 
 	if skip_mfa:
-		print("Creating TextGrid...")
+		print("Reading TextGrid...")
 		utils.proscript_segments_to_textgrid(movie_proscript, outdir, file_prefix="%s_%s"%(movieid, movielang), speaker_segmented=False, no_write=True)
 		utils.get_word_features_from_textgrid(movie_proscript)
 	else:
@@ -485,14 +523,15 @@ def process_movie(movieid, audiofile, subfile, scriptfile, outdir, movielang, in
 	if scriptfile and not scriptfile == "NA":
 		get_speaker_info_from_transcript(movie_proscript, scriptfile)
 
-	#merge_discontinued_segments(movie_proscript)
+	# #merge_discontinued_segments(movie_proscript)
 	utils.assign_word_ids(movie_proscript)
+
 	
 	#STORE DATA TO DISK
 	extract_proscript_data_to_disk(movie_proscript, outdir, movielang, cut_audio_portions = cut_audio_portions, extract_segments_as_proscript = False, output_audio_format = 'wav')
 
-	if DELETE_TMP_WAV:
-		os.remove(tmp_audiopath)
+	# if DELETE_TMP_WAV:
+	# 	os.remove(tmp_audiopath)
 
 	return movie_proscript
 
@@ -517,7 +556,7 @@ def main(options):
 		task_list = fill_task_list(DEFAULT_FILE_ID, options.audiofile, options.subfile, options.scriptfile, options.outdir, options.movielang)
 
 	#Process all files in task list
-	for movie_proscript in process_tasks(task_list, options.audioformat, options.transcribe_dub, cut_audio_portions=True, skip_mfa=options.skip_mfa):
+	for movie_proscript in process_tasks(task_list, options.audioformat, options.transcribe_dub, cut_audio_portions=False, skip_mfa=options.skip_mfa):
 		print("Processed %s"%movie_proscript.id)
 	
 if __name__ == "__main__":
